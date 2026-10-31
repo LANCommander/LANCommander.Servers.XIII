@@ -1,0 +1,63 @@
+#!/bin/sh
+# Start the XIII dedicated server (START_EXE).
+#
+# Builds the same command line as the game's own System/ServerLauncher.exe:
+#   UCC.exe server <map>?GameIdx=<n>?MapName=<name>?NP=<players>?FF=<0|1>?FR=<frags>?TI=<minutes>
+#     ?Game=<class>?AdminPassword=<pw>?Password=<pw>?SN=<server name>?Mutator=<class>?LAN -port=<port>
+# and runs it from System/ under Wine. Engine settings live in XIII_INI (see the 30-ConfigureXIII
+# hook); any START_ARGS are appended.
+set -e
+
+system="${SERVER_ROOT:-/config/Merged}/System"
+
+if [ ! -f "$system/UCC.exe" ]; then
+    echo "System/UCC.exe not found in ${SERVER_ROOT:-/config/Merged}. Put an XIII install (patch 1.4) in /config/Server." >&2
+    exit 1
+fi
+
+# Game types in ServerLauncher.exe's order; GameIdx is the index into this list
+mutator=""
+case "$(echo "${XIII_GAME_TYPE:-dm}" | tr '[:upper:]' '[:lower:]')" in
+    dm|deathmatch)          idx=0; game="XIIIMP.XIIIMPGameInfo" ;;
+    tdm|teamdeathmatch)     idx=1; game="XIIIMP.XIIIMPTeamGameInfo" ;;
+    ctf|capturetheflag)     idx=2; game="XIIIMP.XIIIMPCTFGameInfo" ;;
+    hunt|thehunt|duck)      idx=3; game="XIIIMP.XIIIMPDuckGameInfo" ;;
+    sabotage|bomb)          idx=4; game="XIIIMP.XIIIMPBombGame" ;;
+    powerup|mario)          idx=5; game="XIIIMP.XIIIMPGameInfo"; mutator="XIIIMP.MarioMutator" ;;
+    *) echo "Unknown XIII_GAME_TYPE '$XIII_GAME_TYPE' (dm, tdm, ctf, hunt, sabotage, powerup)" >&2; exit 1 ;;
+esac
+[ -z "$XIII_MUTATORS" ] || mutator="${mutator:+$mutator,}$XIII_MUTATORS"
+
+case "$(echo "${XIII_FRIENDLY_FIRE:-false}" | tr '[:upper:]' '[:lower:]')" in
+    true|1|yes) ff=1 ;;
+    *)          ff=0 ;;
+esac
+
+map="${XIII_MAP:-DM_Banque}"
+map="${map%.unr}"
+
+# MapName is the readable name the launcher shows (System/MapList.ini), e.g. "Winslow Bank"
+mapname="$XIII_MAP_NAME"
+if [ -z "$mapname" ] && [ -f "$system/MapList.ini" ]; then
+    mapname="$(tr -d '\r' < "$system/MapList.ini" | grep -i "MapUnrName=\"$map.unr\"" | head -n 1 |
+        sed -n 's/.*MapReadableName="\([^"]*\)".*/\1/p')"
+fi
+[ -n "$mapname" ] || mapname="$map"
+
+# URL options are separated by '?' and can't contain spaces; the launcher uses '_' too
+name="$(printf '%s' "${XIII_SERVER_NAME:-XIII Server}" | tr ' ?' '__')"
+mapname="$(printf '%s' "$mapname" | tr ' ?' '__')"
+
+url="$map.unr?GameIdx=$idx?MapName=$mapname?NP=${XIII_MAX_PLAYERS:-8}?FF=$ff?FR=${XIII_FRAG_LIMIT:-20}?TI=${XIII_TIME_LIMIT:-15}"
+url="$url?Game=$game?AdminPassword=$XIII_ADMIN_PASSWORD?Password=$XIII_PASSWORD?SN=$name?Mutator=$mutator"
+case "$(echo "${XIII_LAN:-true}" | tr '[:upper:]' '[:lower:]')" in
+    true|1|yes) url="$url?LAN" ;;
+esac
+[ -z "$XIII_URL_OPTIONS" ] || url="$url?${XIII_URL_OPTIONS#\?}"
+
+shown="$(printf '%s' "$url" | sed -e 's/AdminPassword=[^?][^?]*/AdminPassword=***/' -e 's/?Password=[^?][^?]*/?Password=***/')"
+echo "Starting: UCC.exe server $shown -port=${XIII_PORT:-7777} ini=${XIII_INI:-Server.ini} log=server.log $*"
+
+# UCC resolves packages and inis relative to its working directory
+export WINE_WORKDIR="$system"
+exec wine-run UCC.exe server "$url" "-port=${XIII_PORT:-7777}" "ini=${XIII_INI:-Server.ini}" log=server.log "$@"
